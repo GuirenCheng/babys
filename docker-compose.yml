@@ -1,0 +1,106 @@
+# 微服务 + Redis + Nginx 负载均衡 + Consul 服务注册 编排文件
+# 启动：docker compose up --build -d
+# 访问入口统一为 http://localhost，Consul UI: http://localhost:8500/ui
+
+x-app: &app
+  build: .
+  depends_on:
+    - mysql
+    - redis
+    - consul
+  restart: unless-stopped
+
+x-env: &env
+  DB_HOST: mysql
+  DB_PASSWORD: ${DB_PASSWORD:-changeme}
+  REDIS_URL: redis://redis:6379/1
+  CONSUL_HTTP_ADDR: http://consul:8500
+  PORT: 8000
+  SECRET_KEY: ${SECRET_KEY:-django-insecure-REPLACE-ME-IN-PRODUCTION}
+
+services:
+  mysql:
+    image: mysql:8.0
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-changeme}
+      MYSQL_DATABASE: babys
+    volumes:
+      - ./babys.sql:/docker-entrypoint-initdb.d/babys.sql:ro
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  # Consul 服务注册中心（单节点 Server + Web UI）
+  consul:
+    image: hashicorp/consul:1.19
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0 -node=consul-server
+    ports:
+      - "8500:8500"       # HTTP API + Web UI
+      - "8600:8600/udp"   # DNS 接口
+    volumes:
+      - consul_data:/consul/data
+
+  # 网关服务（首页聚合），2 个实例
+  gateway-1:
+    <<: *app
+    environment:
+      <<: *env
+      SERVICE_ROLE: gateway
+
+  gateway-2:
+    <<: *app
+    environment:
+      <<: *env
+      SERVICE_ROLE: gateway
+
+  # 商品服务，2 个实例
+  commodity-1:
+    <<: *app
+    environment:
+      <<: *env
+      SERVICE_ROLE: commodity
+
+  commodity-2:
+    <<: *app
+    environment:
+      <<: *env
+      SERVICE_ROLE: commodity
+
+  # 用户/订单服务，2 个实例
+  user-1:
+    <<: *app
+    environment:
+      <<: *env
+      SERVICE_ROLE: user
+
+  user-2:
+    <<: *app
+    environment:
+      <<: *env
+      SERVICE_ROLE: user
+
+  # Nginx 反向代理 + 负载均衡
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./media:/app/media:ro
+    depends_on:
+      - gateway-1
+      - gateway-2
+      - commodity-1
+      - commodity-2
+      - user-1
+      - user-2
+
+volumes:
+  mysql_data:
+  consul_data:
