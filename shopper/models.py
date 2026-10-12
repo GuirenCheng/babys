@@ -12,7 +12,7 @@ class CartInfos(models.Model):
     id = models.AutoField(primary_key=True)
     quantity = models.IntegerField('购买数量')
     commodityInfos_id = models.ForeignKey(CommodityInfos, on_delete=models.SET_NULL, db_constraint=False, null=True, blank=True)
-    user_id = models.IntegerField('用户ID')
+    user_id = models.IntegerField('用户ID', db_index=True)
 
     def __str__(self):
         return str(self.id)
@@ -25,8 +25,9 @@ class OrderInfos(models.Model):
     id = models.AutoField(primary_key=True)
     price = models.FloatField('订单总价')
     created = models.DateField('创建时间', auto_now_add=True)
-    user_id = models.IntegerField('用户ID')
+    user_id = models.IntegerField('用户ID', db_index=True)
     state = models.CharField('订单状态', max_length=20, choices=STATE)
+    out_trade_no = models.CharField('订单号', max_length=64, unique=True, null=True, blank=True)
 
     def __str__(self):
         return str(self.id)

@@ -17,6 +17,9 @@ x-env: &env
   CONSUL_HTTP_ADDR: http://consul:8500
   PORT: 8000
   SECRET_KEY: ${SECRET_KEY:-django-insecure-REPLACE-ME-IN-PRODUCTION}
+  DEBUG: "0"
+  GUNICORN_WORKERS: "4"
+  GUNICORN_THREADS: "4"
 
 services:
   mysql:
@@ -30,11 +33,16 @@ services:
       - mysql_data:/var/lib/mysql
     ports:
       - "3306:3306"
+    mem_limit: 1g
 
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    mem_limit: 256m
 
   # Consul 服务注册中心（单节点 Server + Web UI）
   consul:
@@ -104,3 +112,4 @@ services:
 volumes:
   mysql_data:
   consul_data:
+  redis_data:

@@ -1,10 +1,30 @@
 import json
+import time
 from django.core.cache import cache
 from django.db.models import F
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from .serializers import *
+
+
+def _get_or_set(cache_key, fetch, timeout):
+    '''带回源锁的缓存读取：缓存过期时只有一个进程/实例回源查库，防止缓存击穿。'''
+    data = cache.get(cache_key)
+    if data is None:
+        lock_key = cache_key + ':lock'
+        if cache.add(lock_key, '1', timeout=10):
+            try:
+                data = fetch()
+                cache.set(cache_key, data, timeout=timeout)
+            finally:
+                cache.delete(lock_key)
+        else:
+            time.sleep(0.05)  # 别的实例在回源，稍等重读
+            data = cache.get(cache_key)
+            if data is None:
+                data = fetch()
+    return data
 
 
 class homeView(APIView):
@@ -17,8 +37,7 @@ class homeView(APIView):
 
     def get(self, request):
         cache_key = 'commodity:home'
-        data = cache.get(cache_key)
-        if data is None:
+        def fetch():
             data = {'state': 'success', 'msg': '获取成功', 'data': {}}
             data['data']['commodityInfos'] = []
             c = CommodityInfos.objects.order_by('-sold')[:8].all()
@@ -37,8 +56,8 @@ class homeView(APIView):
             gl = [x.seconds for x in types if x.firsts == '儿童用品']
             goods = CommodityInfos.objects.filter(types__in=gl).order_by('-sold')[:5].all()
             data['data']['goods'] = CommodityInfosSerializer(instance=goods, many=True).data
-            cache.set(cache_key, data, timeout=60)
-        return Response(data)
+            return data
+        return Response(_get_or_set(cache_key, fetch, timeout=60))
 
 
 class commodityView(APIView):
@@ -107,16 +126,15 @@ class detailView(APIView):
         context = {'state': 'success', 'msg': '获取成功', 'data': {}}
         # 商品与推荐数据缓存（likes 为用户相关，不缓存，每次按 session 计算）
         cache_key = f'commodity:detail:{id}'
-        detail_data = cache.get(cache_key)
-        if detail_data is None:
+        def fetch():
             c = CommodityInfos.objects.filter(id=id).first()
-            detail_data = {
+            return {
                 'commoditys': CommodityInfosSerializer(instance=c).data,
                 'recommend': CommodityInfosSerializer(
                     instance=CommodityInfos.objects.exclude(id=id).order_by('-sold')[:5], many=True
                 ).data,
             }
-            cache.set(cache_key, detail_data, timeout=60)
+        detail_data = _get_or_set(cache_key, fetch, timeout=60)
         context['data']['commoditys'] = detail_data['commoditys']
         context['data']['recommend'] = detail_data['recommend']
         if id in request.session.get('likes', []):
@@ -137,13 +155,22 @@ class collectView(APIView):
         json_str = json.loads(request.body.decode())
         id = json_str.get('id', '')
         context = {'state': 'fail', 'msg': '收藏失败'}
-        likes = request.session.get('likes', [])
-        if id and not int(id) in likes:
-            # 对商品的收藏数量执行自增加1
-            CommodityInfos.objects.filter(id=id).update(likes=F('likes') + 1)
-            # 根据Session信息判断用户是否已收藏
-            request.session['likes'] = likes + [int(id)]
-            # 收藏数变化，清理商品相关缓存
-            cache.delete_pattern('commodity:*')
-            context = {'state': 'success', 'msg': '收藏成功'}
-        return Response(context)
+        # 按 session 加锁串行化「读 likes → 改 → 写回」，避免并发收藏时列表互相覆盖丢失
+        if not request.session.session_key:
+            request.session.save()
+        lock_key = f'collect_lock:{request.session.session_key}'
+        if not cache.add(lock_key, '1', timeout=5):
+            return Response({'state': 'fail', 'msg': '操作过于频繁'})
+        try:
+            likes = request.session.get('likes', [])
+            if id and int(id) not in likes:
+                # 对商品的收藏数量执行自增加1
+                CommodityInfos.objects.filter(id=id).update(likes=F('likes') + 1)
+                # 根据Session信息判断用户是否已收藏
+                request.session['likes'] = likes + [int(id)]
+                # 收藏数变化，清理商品相关缓存
+                cache.delete_pattern('commodity:*')
+                context = {'state': 'success', 'msg': '收藏成功'}
+            return Response(context)
+        finally:
+            cache.delete(lock_key)

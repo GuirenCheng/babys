@@ -2,6 +2,7 @@ import itertools
 import json
 import os
 import threading
+import time
 import urllib.request
 
 # Consul 地址，默认本地，Docker 内为 http://consul:8500
@@ -45,12 +46,22 @@ def deregister(service_id):
         pass
 
 
+_instances_cache = {}          # service_name -> (monotonic_time, [host:port, ...])
+_INSTANCES_CACHE_TTL = 30      # 健康实例列表缓存时长（秒），避免每次请求都打 Consul
+
+
 def get_healthy_instances(service_name):
-    '''从 Consul 获取某服务的所有健康实例，返回 ['host:port', ...]'''
+    '''从 Consul 获取某服务的所有健康实例，返回 ['host:port', ...]；带短 TTL 缓存。'''
+    now = time.monotonic()
+    cached = _instances_cache.get(service_name)
+    if cached and now - cached[0] < _INSTANCES_CACHE_TTL:
+        return cached[1]
     url = f'{CONSUL_HTTP_ADDR}/v1/health/service/{service_name}?passing=true'
     with urllib.request.urlopen(url, timeout=5) as resp:
         entries = json.loads(resp.read().decode('utf-8'))
-    return [f"{e['Service']['Address']}:{e['Service']['Port']}" for e in entries]
+    instances = [f"{e['Service']['Address']}:{e['Service']['Port']}" for e in entries]
+    _instances_cache[service_name] = (now, instances)
+    return instances
 
 
 _rr_lock = threading.Lock()

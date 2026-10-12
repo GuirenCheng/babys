@@ -23,7 +23,7 @@ SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-REPLACE-ME-IN-PRODUCT
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', '1') == '1'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [h for h in os.environ.get('ALLOWED_HOSTS', '*').split(',') if h]
 
 
 # 各服务共同依赖的基础应用
@@ -164,7 +164,7 @@ REST_FRAMEWORK = {
 
 # 设置跨域访问
 # 指定所有域名(IP)都可以访问，默认为False
-CORS_ORIGIN_ALLOW_ALL = True
+CORS_ORIGIN_ALLOW_ALL = os.environ.get('CORS_ORIGIN_ALLOW_ALL', '1') == '1'
 # 设置允许携带Cookie
 CORS_ALLOW_CREDENTIALS = True
 # 设置允许访问的域名(IP)

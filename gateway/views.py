@@ -1,8 +1,15 @@
 import requests
+from requests.adapters import HTTPAdapter
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from babys.consul import get_service_url
+
+# 复用连接池，避免每次首页聚合请求都新建 TCP 连接
+_session = requests.Session()
+_adapter = HTTPAdapter(pool_connections=5, pool_maxsize=20, max_retries=1)
+_session.mount('http://', _adapter)
+_session.mount('https://', _adapter)
 
 
 class indexView(APIView):
@@ -22,7 +29,7 @@ class indexView(APIView):
         if not url:
             return Response({'state': 'fail', 'msg': '商品服务不可用'}, status=503)
         try:
-            resp = requests.get(url, timeout=5)
+            resp = _session.get(url, timeout=5)
         except requests.RequestException as e:
             return Response(
                 {'state': 'fail', 'msg': '商品服务不可用', 'error': str(e)},

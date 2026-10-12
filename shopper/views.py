@@ -1,7 +1,8 @@
 import json
-import time
+import uuid
 from django.contrib.auth import logout, login, authenticate
 from django.core.cache import cache
+from django.db import IntegrityError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.authentication import SessionAuthentication
@@ -86,10 +87,15 @@ class shopperView(APIView):
         context = {'state': 'success', 'msg': '获取成功', 'data': {}}
         t = request.GET.get('t', '')
         payTime = request.session.get('payTime', '')
-        # 从Session获取并处理已支付的订单信息，写入订单信息表
+        # 从Session获取并处理已支付的订单信息，幂等写入订单信息表（out_trade_no 唯一去重）
         if t and payTime and t == payTime:
             payInfo = request.session.get('payInfo', '')
-            OrderInfos.objects.create(**payInfo)
+            if payInfo:
+                try:
+                    OrderInfos.objects.get_or_create(out_trade_no=t, defaults=payInfo)
+                except IntegrityError:
+                    # 并发下 get_or_create 的竞态兜底：唯一约束已拦截，忽略重复
+                    pass
             del request.session['payTime']
             del request.session['payInfo']
         # 根据当前用户查询用户所有订单信息
@@ -144,23 +150,20 @@ class paysView(APIView):
         if total:
             user_id = request.user.id
             # 基于 Redis 的分布式锁，防止并发重复提交订单（cache.add 底层为 SET NX）
+            # 锁靠短 TTL 自动过期做按用户去抖，不手动删除；否则锁会在请求内即释放、形同虚设
             lock_key = f'pay_lock:{user_id}'
-            if not cache.add(lock_key, '1', timeout=30):
+            if not cache.add(lock_key, '1', timeout=10):
                 context = {'state': 'fail', 'msg': '请勿重复提交订单', 'data': ''}
                 return Response(context)
-            try:
-                out_trade_no = str(int(time.time()))
-                print(out_trade_no)
-                payInfo = dict(price=total, user_id=user_id, state='已支付')
-                request.session['payInfo'] = payInfo
-                request.session['payTime'] = out_trade_no
-                # return_url为前端的路由地址
-                # 如果无法确认路由地址，前端可以通过请求参数传递
-                return_url = 'http://localhost:8010/#/shopper'
-                data = get_pay(out_trade_no, total, return_url)
-                context = {'state': 'success', 'msg': '支付成功', 'data': data}
-            finally:
-                cache.delete(lock_key)
+            out_trade_no = uuid.uuid4().hex
+            payInfo = dict(price=total, user_id=user_id, state='已支付')
+            request.session['payInfo'] = payInfo
+            request.session['payTime'] = out_trade_no
+            # return_url为前端的路由地址
+            # 如果无法确认路由地址，前端可以通过请求参数传递
+            return_url = 'http://localhost:8010/#/shopper'
+            data = get_pay(out_trade_no, total, return_url)
+            context = {'state': 'success', 'msg': '支付成功', 'data': data}
         return Response(context)
 
 
